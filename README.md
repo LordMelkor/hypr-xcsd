@@ -8,7 +8,7 @@ On Omarchy's floating workspaces these apps also get a second, server-side title
 
 It works from the X11 protocol alone: there's no list of app names. Native Wayland apps, and X11 windows that send neither the request nor the hint, are untouched. Tiled X11 windows that send the request get Hyprland's normal tiled move and resize.
 
-Built and tested on Hyprland 0.56.2. Requires a Lua Hyprland config (`hyprland.lua`): the plugin registers a Lua function and refuses to load under a legacy `hyprland.conf`.
+Tested on Hyprland 0.56.2. Also builds against 0.57.2 (Hyprland reorganised its window code in 0.57; `compat.hpp` covers both), but hasn't been run on 0.57 yet. Requires a Lua Hyprland config (`hyprland.lua`): the plugin registers a Lua function and refuses to load under a legacy `hyprland.conf`.
 
 ## Install
 

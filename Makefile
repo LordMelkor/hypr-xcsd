@@ -8,7 +8,7 @@ LDFLAGS += -shared
 
 all: hypr-xcsd.so
 
-hypr-xcsd.so: main.cpp decoration-policy.hpp hook-signatures.hpp
+hypr-xcsd.so: main.cpp decoration-policy.hpp hook-signatures.hpp compat.hpp
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(LDFLAGS) $< -o $@
 
 # Checks that need no running compositor. HYPRLAND selects the binary whose

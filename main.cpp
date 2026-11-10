@@ -29,7 +29,19 @@
 
 #include <hyprland/src/xwayland/XWayland.hpp>
 #include <hyprland/src/desktop/state/WindowState.hpp>
+// Hyprland 0.57 moved Window.hpp into view/window/ and split CWindow into a
+// backend, metadata and presentation (see compat.hpp).
+#if __has_include(<hyprland/src/desktop/view/window/Window.hpp>)
+#define XCSD_HYPRLAND_057
+#include <hyprland/src/desktop/view/window/Window.hpp>
+#define private public
+#include <hyprland/src/desktop/view/window/X11Backend.hpp>
+#include <hyprland/src/desktop/view/window/WindowPresentation.hpp>
+#include <hyprland/src/desktop/view/window/WindowMetadata.hpp>
+#undef private
+#else
 #include <hyprland/src/desktop/view/Window.hpp>
+#endif
 #include <hyprland/src/desktop/rule/windowRule/WindowRuleApplicator.hpp>
 #include <hyprland/src/layout/LayoutManager.hpp>
 #include <hyprland/src/layout/supplementary/DragController.hpp>
@@ -44,6 +56,7 @@
 #include <stdexcept>
 #include "decoration-policy.hpp"
 #include "hook-signatures.hpp"
+#include "compat.hpp"
 
 // Debug trace: set HYPR_XCSD_DEBUG=1 in Hyprland's environment (hl.env) to
 // log decisions to $XDG_RUNTIME_DIR/hypr-xcsd.log.
@@ -78,7 +91,7 @@ enum : uint32_t {
 
 static PHLWINDOW windowForXID(xcb_window_t xid) {
     for (const auto& w : Desktop::windowState()->windows()) {
-        const auto xs = w->m_xwaylandSurface.lock();
+        const auto xs = XcsdCompat::xsurface(w);
         if (xs && xs->m_xID == xid)
             return w;
     }
@@ -93,13 +106,13 @@ static bool hasTag(const PHLWINDOW& w) {
 static void setTag(const PHLWINDOW& w, bool on) {
     if (hasTag(w) == on)
         return;
-    dbg("tag %s %s mapped=%d", on ? "+" : "-", w->m_title.c_str(), (int)w->m_isMapped);
+    dbg("tag %s %s mapped=%d", on ? "+" : "-", XcsdCompat::title(w).c_str(), (int)XcsdCompat::mapped(w));
     w->m_ruleApplicator->m_tagKeeper.applyTag(std::string(on ? "+" : "-") + TAG);
-    if (w->m_isMapped) {
+    if (XcsdCompat::mapped(w)) {
         // Visible windows already update decorations and notify plugins here.
         w->m_ruleApplicator->propertiesChanged(Desktop::Rule::RULE_PROP_TAG);
         if (w->isHidden()) {
-            w->updateDecorationValues();
+            XcsdCompat::refreshDecorations(w);
             Event::bus()->m_events.window.updateRules.emit(w);
         }
     }
@@ -132,7 +145,7 @@ static void onMoveResize(xcb_client_message_event_t* e) {
     const auto w = windowForXID(e->window);
     dbg("moveresize xid=0x%x dir=%u window=%d held=%d dragging=%d", e->window, e->data.data32[2], !!w,
         (int)g_pInputManager->hasHeldButtons(), (int)!!g_layoutManager->dragController()->target());
-    if (!w || !w->m_isMapped || w->isHidden() || w->isX11OverrideRedirect())
+    if (!w || !XcsdCompat::mapped(w) || w->isHidden() || XcsdCompat::overrideRedirect(w))
         return;
 
     const auto& dc  = g_layoutManager->dragController();
@@ -232,7 +245,7 @@ static void cancelDrain() {
 
 static void clearTags() {
     for (const auto& w : Desktop::windowState()->windows())
-        if (w->m_xwaylandSurface.lock())
+        if (XcsdCompat::xsurface(w))
             setTag(w, false);
 }
 
@@ -241,7 +254,7 @@ static void sweepExisting() {
         return;
     auto* conn = g_pXWayland->m_wm->getConnection();
     for (const auto& w : Desktop::windowState()->windows()) {
-        const auto xs = w->m_xwaylandSurface.lock();
+        const auto xs = XcsdCompat::xsurface(w);
         if (!xs || xs->m_overrideRedirect)
             continue;
         auto* r = fetchMotif(conn, xs->m_xID);

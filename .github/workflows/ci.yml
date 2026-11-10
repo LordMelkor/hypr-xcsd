@@ -1,7 +1,10 @@
-# Builds and tests against the latest Hyprland in Arch's repos, on every push
-# and weekly. hypr-xcsd hooks two Hyprland internals; when an upstream release
-# changes them, the weekly run usually flags it early (not guaranteed: a
-# release can land between runs). It doesn't load the plugin or test dragging.
+# Builds and tests hypr-xcsd on every push and weekly against two Hyprlands:
+#   - 0.56.2, from an Arch Linux Archive snapshot (the version Omarchy shipped
+#     when this was written), so the supported release keeps building;
+#   - Arch's latest, as an early warning. hypr-xcsd hooks two Hyprland
+#     internals; when a release changes them this usually fails before that
+#     release reaches an Omarchy machine (not guaranteed: it can land between
+#     runs). Neither job loads the plugin or tests dragging.
 name: ci
 on:
   push:
@@ -14,9 +17,21 @@ jobs:
   build-and-test:
     runs-on: ubuntu-latest
     container: archlinux:latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: hyprland-0.56.2
+            snapshot: "2026/10/20"
+          - name: hyprland-latest
+            snapshot: ""
+    name: ${{ matrix.name }}
     steps:
+      - name: Pin repositories to the snapshot
+        if: matrix.snapshot != ''
+        run: echo 'Server = https://archive.archlinux.org/repos/${{ matrix.snapshot }}/$repo/os/$arch' > /etc/pacman.d/mirrorlist
       - name: Install Hyprland and build tools
-        run: pacman -Syu --noconfirm --needed base-devel git hyprland pixman libdrm libxcb python lua
+        run: pacman -Syyuu --noconfirm --needed base-devel git hyprland pixman libdrm libxcb python lua
       - uses: actions/checkout@v4
       - name: Hyprland version under test
         run: pacman -Q hyprland
