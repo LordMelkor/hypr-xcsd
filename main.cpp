@@ -169,11 +169,16 @@ static void onButton(IPointer::SButtonEvent e, Event::SCallbackInfo& info) {
     if (e.state != WL_POINTER_BUTTON_STATE_RELEASED || !g_dragWindow)
         return;
     const auto w = g_dragWindow.lock();
-    g_dragWindow.reset();
     const auto t = g_layoutManager->dragController()->target();
-    // Only our drag, still running: this release ends it and Hyprland keeps it.
-    if (info.cancelled || !w || !t || t->window() != w)
+    if (!w || !t || t->window() != w) { // our drag already ended another way
+        g_dragWindow.reset();
         return;
+    }
+    // Consumed by someone else (e.g. a title bar plugin): the drag goes on.
+    if (info.cancelled)
+        return;
+    // This release ends our drag, and Hyprland keeps it.
+    g_dragWindow.reset();
     const auto surf = w->resource();
     if (!surf || g_pSeatManager->m_state.pointerFocus.lock() != surf)
         return;
@@ -357,6 +362,12 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
 }
 
 APICALL EXPORT void PLUGIN_EXIT() {
+    // End our own drag now, so its physical release reaches the app normally
+    // instead of being kept by Hyprland with no listener left to forward it.
+    if (const auto w = g_dragWindow.lock()) {
+        if (const auto t = g_layoutManager->dragController()->target(); t && t->window() == w)
+            g_layoutManager->endDragTarget();
+    }
     cancelDrain();
     // Give the title bars back; hooks and Lua functions are removed by Hyprland.
     clearTags();
