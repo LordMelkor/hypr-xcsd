@@ -18,25 +18,30 @@ class Health(unittest.TestCase):
         repo={'hypr-xcsd':{'enabled':True}}
         self.assertEqual(assess(repo,'new','new','old',set())[0],2)
         self.assertEqual(assess(repo,'old','new','new',set())[0],1)
-    def test_hook_order_and_failure_propagation(self):
+    def test_hook_keeps_omarchy_sudo_login_and_propagates_status(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);bins=root/'bin';bins.mkdir();(root/'.local/bin').mkdir(parents=True)
+            # Fake hyprpm calls sudo the way hyprpm 0.56.2 does: cache, work, then -k.
             for name,body in {
-                'hyprpm':'echo update >> "$TRACE"; exit "${UPDATE_STATUS:-0}"',
-                'sudo':'echo "auth:$*" >> "$TRACE"; exit "${AUTH_STATUS:-0}"',
-                'notify-send':'echo notify >> "$TRACE"',
+                'hyprpm':'sudo echo hyprland; sudo install -m644 a b; sudo -k; echo update >> "$TRACE"; exit "${UPDATE_STATUS:-0}"',
+                'realsudo':'echo "sudo:$*" >> "$TRACE"',
             }.items():
                 p=bins/name;p.write_text('#!/bin/bash\n'+body+'\n');p.chmod(0o755)
-            p=root/'.local/bin/hypr-xcsd-check';p.write_text('#!/bin/bash\necho verify >> "$TRACE"\nexit "${CHECK_STATUS:-0}"\n');p.chmod(0o755)
-            for update,check,auth,want in [('0','0','0',0),('7','0','0',7),('0','1','0',1),('0','0','1',1)]:
+            checker=root/'.local/bin/hypr-xcsd-check'
+            for update,check,with_checker,want in [('0','0',True,0),('7','0',True,7),('0','1',True,1),('0','0',False,0)]:
+                checker.unlink(missing_ok=True)
+                if with_checker:
+                    checker.write_text('#!/bin/bash\necho verify >> "$TRACE"\nexit "${CHECK_STATUS:-0}"\n');checker.chmod(0o755)
                 trace=root/'trace';trace.unlink(missing_ok=True)
-                env={**os.environ,'HOME':str(root),'PATH':str(bins)+':'+os.environ['PATH'],
-                     'TRACE':str(trace),'OMARCHY_UPDATE_LOGGED':'1','UPDATE_STATUS':update,
-                     'CHECK_STATUS':check,'AUTH_STATUS':auth}
+                env={**os.environ,'HOME':str(root),'PATH':str(bins)+':'+os.environ['PATH'],'XDG_RUNTIME_DIR':str(root),
+                     'TRACE':str(trace),'UPDATE_STATUS':update,'CHECK_STATUS':check,'XCSD_REAL_SUDO':str(bins/'realsudo')}
                 p=subprocess.run(['bash',str(ROOT/'hooks/50-hyprpm')],env=env,capture_output=True)
-                self.assertEqual(p.returncode,want)
+                self.assertEqual(p.returncode,want,p.stderr)
                 calls=trace.read_text().splitlines()
-                self.assertEqual(calls[:2],['update','auth:true'])
-                if auth=='0':self.assertEqual(calls[2],'verify')
+                # -k never reaches the real sudo; everything else passes through unchanged.
+                self.assertEqual(calls[:3],['sudo:echo hyprland','sudo:install -m644 a b','update'])
+                self.assertNotIn('sudo:-k',calls)
+                self.assertEqual('verify' in calls, with_checker)
+                self.assertEqual(list(root.glob('hyprpm-sudo.*')),[])  # wrapper dir cleaned up
 
 unittest.main()

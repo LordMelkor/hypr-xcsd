@@ -58,7 +58,7 @@ CI runs that check, plus a build and the tests, against the latest Hyprland in A
 hyprpm details worth knowing (as of hyprpm 0.56.2):
 - **A failed build removes the previous working binary.** hyprpm keeps no last-good copy. Fix the source and run `hyprpm update` again.
 - **New code reliably takes effect at the next login.** Unloading and reloading may keep the old code in memory (GCC builds of this plugin contain symbols that block unloading), so treat a fresh session as the point where an update applies.
-- **The update hook re-runs `sudo true` afterwards.** hyprpm clears sudo's cached login when it exits, so inside `omarchy update` you may be asked for your password a second time.
+- **The update hook preserves Omarchy's single password prompt.** hyprpm clears sudo's cached login (`sudo -k`) whenever it exits, which would end the login `omarchy update` keeps alive for its later steps. The hook runs hyprpm with a `sudo` wrapper, on PATH for that one call only, that drops just the `-k`/`-K` flags. Nothing system-wide changes.
 - **A successful hyprpm exit doesn't prove the plugin loaded.** `hypr-xcsd-check` reports what is actually loaded: enabled, built for the running Hyprland, and present.
 
 ## Behaviour details

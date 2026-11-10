@@ -1,17 +1,33 @@
 #!/bin/bash
-# hyprpm owns updates. It can unload the current plugin even on a failed build.
-# 0.56.2 also runs sudo -k; explicitly restore enclosing Omarchy authorization.
-# This can prompt again. No second keepalive or competing binary loader is used.
+# Omarchy post-update hook: rebuild hyprpm plugins against the updated Hyprland.
+#
+# Omarchy's update asks for the password once and keeps that sudo login alive
+# until it finishes; its keep-alive stops as soon as the login disappears.
+# hyprpm 0.56.2 always runs `sudo -k` on exit (NSys::root::dropSudo), which
+# would end Omarchy's login part-way through the update. hyprpm finds sudo by
+# name on PATH, so for this one call a wrapper drops only the -k/-K flags and
+# passes everything else to the real sudo. Nothing system-wide is changed.
 set -u
+
+shim=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/hyprpm-sudo.XXXXXX")
+trap 'rm -rf "$shim"' EXIT
+cat >"$shim/sudo" <<'EOF'
+#!/bin/bash
+args=()
+for a in "$@"; do
+  case "$a" in
+  -k | -K | --reset-timestamp | --remove-timestamp) ;;
+  *) args+=("$a") ;;
+  esac
+done
+(( ${#args[@]} )) || exit 0
+exec "${XCSD_REAL_SUDO:-/usr/bin/sudo}" "${args[@]}" # override is for tests only
+EOF
+chmod 700 "$shim/sudo"
+
 update_status=0
-hyprpm update || update_status=$?
-if [[ ${OMARCHY_UPDATE_LOGGED:-0} == 1 ]]; then
-  if ! sudo true; then
-    notify-send "Omarchy authorization needs renewal" \
-      "hyprpm expired sudo authorization. Later update steps may need authentication." || true
-    exit 1
-  fi
-fi
+PATH="$shim:$PATH" hyprpm update || update_status=$?
+
 check_status=0
 checker="$HOME/.local/bin/hypr-xcsd-check"
 if [[ -x $checker ]]; then
