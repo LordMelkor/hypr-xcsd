@@ -17,16 +17,9 @@
 // Init fails closed (throws, so
 // Hyprland unloads us) unless both hooks resolve uniquely and install.
 
-// The access hack below is needed for XWM's private getConnection(). Standard
-// and other Hyprland headers are included first so it reaches as little else
-// as possible; it still applies to whatever XWM.hpp itself includes.
-#include <any>
-#include <sstream>
 #include <hyprland/src/plugins/PluginAPI.hpp>
 #include <hyprland/src/xwayland/XSurface.hpp>
-#define private public
 #include <hyprland/src/xwayland/XWM.hpp>
-#undef private
 
 #include <hyprland/src/xwayland/XWayland.hpp>
 #include <hyprland/src/desktop/state/WindowState.hpp>
@@ -55,6 +48,26 @@
 #include "decoration-policy.hpp"
 #include "hook-signatures.hpp"
 #include "compat.hpp"
+
+// XWM's X connection is private (CXWM::getConnection()). Reach that one member
+// through a pointer taken in an explicit template instantiation, where C++
+// skips access checks, instead of redefining `private` across Hyprland's
+// headers (which changed their class definitions as seen by this plugin).
+namespace XcsdPrivate {
+    using GetConnectionFn = xcb_connection_t* (CXWM::*)();
+    GetConnectionFn getConnectionPtr();
+    template <GetConnectionFn P>
+    struct Access {
+        friend GetConnectionFn getConnectionPtr() {
+            return P;
+        }
+    };
+    template struct Access<&CXWM::getConnection>;
+}
+
+static xcb_connection_t* xwmConnection(CXWM* wm) {
+    return (wm->*XcsdPrivate::getConnectionPtr())();
+}
 
 // Debug trace: set HYPR_XCSD_DEBUG=1 in Hyprland's environment (hl.env) to
 // log decisions to $XDG_RUNTIME_DIR/hypr-xcsd.log.
@@ -202,7 +215,7 @@ static void hkReadProp(void* thisptr, SP<CXWaylandSurface> xs, uint32_t atom, xc
             // readWindowData can run more than once and outside XWM::onEvent.
             // Query before initial mapping as well, to avoid a duplicate bar.
             auto* wm = (CXWM*)thisptr;
-            auto* r = fetchMotif(wm->getConnection(), xs->m_xID);
+            auto* r = fetchMotif(xwmConnection(wm), xs->m_xID);
             applyMotif(w, r);
             free(r);
         }
@@ -249,7 +262,7 @@ static void clearTags() {
 static void sweepExisting() {
     if (!g_pXWayland || !g_pXWayland->m_wm)
         return;
-    auto* conn = g_pXWayland->m_wm->getConnection();
+    auto* conn = xwmConnection(g_pXWayland->m_wm.get());
     for (const auto& w : Desktop::windowState()->windows()) {
         const auto id = XcsdCompat::x11id(w);
         if (!id || XcsdCompat::overrideRedirect(w))

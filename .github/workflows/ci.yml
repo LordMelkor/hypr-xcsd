@@ -39,6 +39,6 @@ jobs:
         run: |
           pacman -Q hyprland
           # A pinned job must test the version it's named for, not whatever the snapshot resolves to.
-          if [ -n "${{ matrix.expect }}" ]; then pacman -Q hyprland | grep -q " ${{ matrix.expect }}"; fi
+          if [ -n "${{ matrix.expect }}" ]; then pacman -Q hyprland | grep -qF " ${{ matrix.expect }}"; fi
       - name: Build and test
         run: make test
