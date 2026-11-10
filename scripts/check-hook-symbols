@@ -1,0 +1,23 @@
+#!/bin/sh
+# Verify that a Hyprland binary still exports, with exactly the expected
+# signatures, the functions hypr-xcsd hooks (see hook-signatures.hpp). The
+# plugin refuses to load on a mismatch; this finds it before you update.
+#
+# Usage: scripts/check-hook-symbols [path/to/Hyprland]   (default /usr/bin/Hyprland)
+set -eu
+bin=${1:-/usr/bin/Hyprland}
+here=$(dirname "$0")/..
+symbols=$(nm -D --defined-only "$bin" | c++filt | sed -n 's/^[0-9a-f]* [TtWw] //p')
+status=0
+for sig in $(sed -n 's/^#define SIG_[A-Z_]* *"\(.*\)"$/\1/p' "$here/hook-signatures.hpp" | tr ' ' '\037'); do
+  sig=$(printf '%s' "$sig" | tr '\037' ' ')
+  count=$(printf '%s\n' "$symbols" | grep -cxF -- "$sig" || true)
+  if [ "$count" -eq 1 ]; then
+    echo "ok       $sig"
+  else
+    echo "MISSING  $sig (found $count)"
+    status=1
+  fi
+done
+[ -n "${sig:-}" ] || { echo "no signatures parsed from hook-signatures.hpp"; exit 1; }
+exit $status

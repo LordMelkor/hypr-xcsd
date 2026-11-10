@@ -43,6 +43,7 @@
 #include <cstdlib>
 #include <stdexcept>
 #include "decoration-policy.hpp"
+#include "hook-signatures.hpp"
 
 // Debug trace: set HYPR_XCSD_DEBUG=1 in Hyprland's environment (hl.env) to
 // log decisions to $XDG_RUNTIME_DIR/hypr-xcsd.log.
@@ -198,21 +199,25 @@ static void hkReadProp(void* thisptr, SP<CXWaylandSurface> xs, uint32_t atom, xc
     } catch (...) {}
 }
 
-static CFunctionHook* hookUnique(const std::string& name, const std::string& demangledPrefix, void* dest) {
-    const auto matches = HyprlandAPI::findFunctionsByName(g_handle, name);
+// Hook a Hyprland function only if its full signature is exactly the one our
+// replacement is written for. Matching the name alone would let an upstream
+// parameter change through, and calling it with the old arguments would
+// corrupt or crash the compositor. Any mismatch fails init instead.
+static CFunctionHook* hookExact(const std::string& name, const std::string& signature, void* dest) {
     const SFunctionMatch* found = nullptr;
+    const auto            matches = HyprlandAPI::findFunctionsByName(g_handle, name);
     for (const auto& m : matches) {
-        if (m.demangled.starts_with(demangledPrefix)) {
-            if (found)
-                throw std::runtime_error("hypr-xcsd: ambiguous symbol " + name);
-            found = &m;
-        }
+        if (m.demangled != signature)
+            continue;
+        if (found)
+            throw std::runtime_error("hypr-xcsd: ambiguous symbol " + signature);
+        found = &m;
     }
     if (!found)
-        throw std::runtime_error("hypr-xcsd: symbol not found " + name);
+        throw std::runtime_error("hypr-xcsd: Hyprland no longer has " + signature + "; the plugin needs updating");
     auto* hook = HyprlandAPI::createFunctionHook(g_handle, found->address, dest);
     if (!hook || !hook->hook())
-        throw std::runtime_error("hypr-xcsd: failed to hook " + name);
+        throw std::runtime_error("hypr-xcsd: failed to hook " + signature);
     return hook;
 }
 
@@ -269,8 +274,8 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         throw std::runtime_error("hypr-xcsd: built for a different Hyprland");
 
     try {
-        g_hookCM   = hookUnique("handleClientMessage", "CXWM::handleClientMessage", (void*)&hkClientMessage);
-        g_hookProp = hookUnique("readProp", "CXWM::readProp", (void*)&hkReadProp);
+        g_hookCM   = hookExact("handleClientMessage", SIG_CLIENT_MESSAGE, (void*)&hkClientMessage);
+        g_hookProp = hookExact("readProp", SIG_READ_PROP, (void*)&hkReadProp);
         if (!HyprlandAPI::addLuaFunction(handle, "xcsd", "drag_active", luaDragActive))
             throw std::runtime_error("hypr-xcsd: cannot expose native drag state");
         dbg("init ok");

@@ -8,10 +8,23 @@ LDFLAGS += -shared
 
 all: hypr-xcsd.so
 
-hypr-xcsd.so: main.cpp decoration-policy.hpp
+hypr-xcsd.so: main.cpp decoration-policy.hpp hook-signatures.hpp
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(LDFLAGS) $< -o $@
 
-clean:
-	rm -f hypr-xcsd.so
+# Checks that need no running compositor. HYPRLAND selects the binary whose
+# hook symbols are verified. KEEP_BELOW_BAR=<path> also runs the Lua checks
+# against an Omarchy keep-below-bar module.
+HYPRLAND ?= /usr/bin/Hyprland
+test: hypr-xcsd.so tests/decoration-policy
+	./tests/decoration-policy
+	python3 tests/maintenance.py
+	scripts/check-hook-symbols $(HYPRLAND)
+	@if [ -n "$(KEEP_BELOW_BAR)" ]; then lua tests/bar-correction.lua "$(KEEP_BELOW_BAR)"; fi
 
-.PHONY: all clean
+tests/decoration-policy: tests/decoration-policy.cpp decoration-policy.hpp
+	$(CXX) -std=c++20 -O1 $< -o $@
+
+clean:
+	rm -f hypr-xcsd.so tests/decoration-policy
+
+.PHONY: all test clean

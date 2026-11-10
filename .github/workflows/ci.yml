@@ -1,0 +1,23 @@
+# Builds and tests against the latest Hyprland in Arch's repos, on every push
+# and weekly. hypr-xcsd hooks two Hyprland internals; when an upstream release
+# changes them, the weekly run fails before that Hyprland reaches your machine.
+name: ci
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Install Hyprland and build tools
+        run: pacman -Syu --noconfirm --needed base-devel git hyprland pixman libdrm libxcb python lua
+      - uses: actions/checkout@v4
+      - name: Hyprland version under test
+        run: pacman -Q hyprland
+      - name: Build and test
+        run: make test
