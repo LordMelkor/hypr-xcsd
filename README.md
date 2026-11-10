@@ -67,7 +67,7 @@ hyprpm details worth knowing (as of hyprpm 0.56.2):
 - **Keyboard move and resize:** EWMH directions 9 and 10 are ignored.
 - **The `x11-csd` tag** mirrors only a valid, explicit Motif "no decorations" hint. If the hint is absent, deleted, malformed or asks for decorations, Omarchy's bar comes back. Sending a move request doesn't change the decision. Windows are checked before they first appear, and windows already open are checked when the plugin loads. Unloading the plugin removes the tags.
 - **For other Lua code:** `hl.plugin.xcsd.drag_active()` returns whether Hyprland's native drag is running.
-- **Debug trace:** set `HYPR_XCSD_DEBUG=1` in Hyprland's environment before the plugin loads. Decisions are logged to `$XDG_RUNTIME_DIR/hypr-xcsd.log`.
+- **Debug trace:** set `HYPR_XCSD_DEBUG=1` in Hyprland's environment before the plugin first loads in a session. The setting is read once per session: unloading and reloading may reuse the same resident code, which keeps the first value. Decisions are logged to `$XDG_RUNTIME_DIR/hypr-xcsd.log`.
 
 ## Develop
 

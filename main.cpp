@@ -280,6 +280,14 @@ static void sweepExisting() {
         throw std::runtime_error("hypr-xcsd: cannot schedule X event drain");
 }
 
+// Hyprland frees our hooks on unload or failed init, but this library can stay
+// resident and be initialised again, keeping its statics. Drop the pointers so
+// no stale hook from a previous load is ever mistaken for a live one.
+static void forgetHooks() {
+    g_hookCM   = nullptr;
+    g_hookProp = nullptr;
+}
+
 // Read-only integration point: no second drag state machine in Lua.
 static int luaDragActive(lua_State* L) {
     lua_pushboolean(L, g_layoutManager && !!g_layoutManager->dragController()->target());
@@ -308,6 +316,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         cancelDrain();
         try { clearTags(); } catch (...) {}
         // Hyprland removes hooks/Lua functions on failed init; EXIT is skipped.
+        forgetHooks();
         throw;
     }
 }
@@ -316,4 +325,5 @@ APICALL EXPORT void PLUGIN_EXIT() {
     cancelDrain();
     // Give the title bars back; hooks and Lua functions are removed by Hyprland.
     clearTags();
+    forgetHooks();
 }
