@@ -38,6 +38,7 @@
 #include <hyprland/src/layout/supplementary/DragController.hpp>
 #include <hyprland/src/layout/target/Target.hpp>
 #include <hyprland/src/managers/input/InputManager.hpp>
+#include <hyprland/src/managers/SeatManager.hpp>
 #include <hyprland/src/Compositor.hpp>
 #include <lua.hpp>
 #include <hyprland/src/event/EventBus.hpp>
@@ -151,6 +152,34 @@ static xcb_get_property_reply_t* fetchMotif(xcb_connection_t* conn, xcb_window_t
     return xcb_get_property_reply(conn, cookie, nullptr);
 }
 
+// Hyprland keeps the release that ends a native drag, so an X11 app would never
+// see it, think the button is still held, and ignore its next press: every
+// other title-bar drag would do nothing. When a drag this plugin started ends
+// on a release, forward that release to the window. It is forwarded only after
+// the drag has started, never at the start: GTK cancels a move or resize when
+// it sees its button's release (EWMH _NET_WM_MOVERESIZE_CANCEL).
+//
+// The drag keeps pointer focus on the window (no exclusive grab, as with
+// Super + drag). An exclusive grab clears pointer focus at once, and XWayland
+// then marks the button released without telling the app.
+static PHLWINDOWREF        g_dragWindow;
+static CHyprSignalListener g_buttonListener;
+
+static void onButton(IPointer::SButtonEvent e, Event::SCallbackInfo& info) {
+    if (e.state != WL_POINTER_BUTTON_STATE_RELEASED || !g_dragWindow)
+        return;
+    const auto w = g_dragWindow.lock();
+    g_dragWindow.reset();
+    const auto t = g_layoutManager->dragController()->target();
+    // Only our drag, still running: this release ends it and Hyprland keeps it.
+    if (info.cancelled || !w || !t || t->window() != w)
+        return;
+    const auto surf = w->resource();
+    if (!surf || g_pSeatManager->m_state.pointerFocus.lock() != surf)
+        return;
+    g_pSeatManager->sendPointerButton(e.timeMs, e.button, WL_POINTER_BUTTON_STATE_RELEASED);
+}
+
 static void onMoveResize(xcb_client_message_event_t* e) {
     const auto w = windowForXID(e->window);
     dbg("moveresize xid=0x%x dir=%u window=%d held=%d dragging=%d", e->window, e->data.data32[2], !!w,
@@ -183,9 +212,12 @@ static void onMoveResize(xcb_client_message_event_t* e) {
     };
 
     if (dir == MR_MOVE)
-        g_layoutManager->beginDragTarget(w->layoutTarget(), MBIND_MOVE, std::nullopt, true);
+        g_layoutManager->beginDragTarget(w->layoutTarget(), MBIND_MOVE, std::nullopt, false);
     else
-        g_layoutManager->beginDragTarget(w->layoutTarget(), MBIND_RESIZE, CORNER[dir], true);
+        g_layoutManager->beginDragTarget(w->layoutTarget(), MBIND_RESIZE, CORNER[dir], false);
+
+    if (const auto t = dc->target(); t && t->window() == w)
+        g_dragWindow = w;
 }
 
 typedef void (*origClientMessage)(void*, xcb_client_message_event_t*);
@@ -286,6 +318,8 @@ static void sweepExisting() {
 static void forgetHooks() {
     g_hookCM   = nullptr;
     g_hookProp = nullptr;
+    g_buttonListener.reset();
+    g_dragWindow.reset();
 }
 
 // Read-only integration point: no second drag state machine in Lua.
@@ -307,6 +341,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     try {
         g_hookCM   = hookExact("handleClientMessage", SIG_CLIENT_MESSAGE, (void*)&hkClientMessage);
         g_hookProp = hookExact("readProp", SIG_READ_PROP, (void*)&hkReadProp);
+        g_buttonListener = Event::bus()->m_events.input.mouse.button.listen(onButton);
         if (!HyprlandAPI::addLuaFunction(handle, "xcsd", "drag_active", luaDragActive))
             throw std::runtime_error("hypr-xcsd: cannot expose native drag state");
         dbg("init ok");
