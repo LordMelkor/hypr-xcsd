@@ -13,7 +13,10 @@ if [[ ${OMARCHY_UPDATE_LOGGED:-0} == 1 ]]; then
   fi
 fi
 check_status=0
-"$HOME/.local/bin/hypr-xcsd-check" --notify || check_status=$?
+checker="$HOME/.local/bin/hypr-xcsd-check"
+if [[ -x $checker ]]; then
+  "$checker" --notify || check_status=$?
+fi
 if (( update_status != 0 )); then
   echo "hyprpm update returned $update_status; inspect its output above (a new session may be required)." >&2
   exit "$update_status"

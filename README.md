@@ -6,9 +6,9 @@ Examples are many games, game launchers and stores, and GTK, Qt or Electron apps
 
 On Omarchy's floating workspaces these apps also get a second, server-side title bar. hypr-xcsd tags any X11 window that asks the window manager not to decorate it (`_MOTIF_WM_HINTS`) as `x11-csd`, and one window rule hides Omarchy's bar for that tag.
 
-It works from the X11 protocol alone: there's no list of app names. Native Wayland apps, tiled windows and everything else are untouched.
+It works from the X11 protocol alone: there's no list of app names. Native Wayland apps, and X11 windows that send neither the request nor the hint, are untouched. Tiled X11 windows that send the request get Hyprland's normal tiled move and resize.
 
-Built and tested on Hyprland 0.56.2.
+Built and tested on Hyprland 0.56.2. Requires a Lua Hyprland config (`hyprland.lua`): the plugin registers a Lua function and refuses to load under a legacy `hyprland.conf`.
 
 ## Install
 
@@ -39,7 +39,7 @@ end
 - runs `hyprpm reload` at login,
 - adds the `x11-csd` → `hyprbars:no_bar` window rule.
 
-It also calls the optional health check below. Install it with `install -m 755 scripts/hypr-xcsd-check ~/.local/bin/`, or delete that part of the line.
+It also calls the health check `hypr-xcsd-check`. Install it with `install -m 755 scripts/hypr-xcsd-check ~/.local/bin/`. It's optional: without it, delete that part of the line in `xcsd.lua`. The update hook below skips it when it isn't installed.
 
 Omarchy's `omarchy update` doesn't run hyprpm. To rebuild the plugin automatically after Hyprland updates, install the post-update hook: `omarchy hook install post-update hooks/50-hyprpm`.
 
@@ -53,11 +53,11 @@ To check whether a Hyprland binary still matches before you update:
 scripts/check-hook-symbols /usr/bin/Hyprland
 ```
 
-CI runs that check, plus a build and the tests, against the latest Hyprland in Arch's repositories on every push and weekly. A breaking upstream change shows up there first.
+CI runs that check, plus a build and the tests, against the latest Hyprland in Arch's repositories on every push and weekly. That usually flags a breaking upstream change early, but not always before it reaches you: a release can land between weekly runs. CI also never loads the plugin or tests dragging.
 
 hyprpm details worth knowing (as of hyprpm 0.56.2):
 - **A failed build removes the previous working binary.** hyprpm keeps no last-good copy. Fix the source and run `hyprpm update` again.
-- **New code takes effect at the next login.** A Hyprland plugin can't be fully unloaded, so even after `hyprpm update` the old code can stay in memory until then.
+- **New code reliably takes effect at the next login.** Unloading and reloading may keep the old code in memory (GCC builds of this plugin contain symbols that block unloading), so treat a fresh session as the point where an update applies.
 - **The update hook re-runs `sudo true` afterwards.** hyprpm clears sudo's cached login when it exits, so inside `omarchy update` you may be asked for your password a second time.
 - **A successful hyprpm exit doesn't prove the plugin loaded.** `hypr-xcsd-check` reports what is actually loaded: enabled, built for the running Hyprland, and present.
 

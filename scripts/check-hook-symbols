@@ -8,8 +8,15 @@ set -eu
 bin=${1:-/usr/bin/Hyprland}
 here=$(dirname "$0")/..
 symbols=$(nm -D --defined-only "$bin" | c++filt | sed -n 's/^[0-9a-f]* [TtWw] //p')
+defs=$(grep -cE '^[[:space:]]*#[[:space:]]*define[[:space:]]+SIG_' "$here/hook-signatures.hpp" || true)
+sigs=$(sed -nE 's/^[[:space:]]*#[[:space:]]*define[[:space:]]+SIG_[A-Z_]+[[:space:]]+"(.*)"[[:space:]]*$/\1/p' "$here/hook-signatures.hpp")
+parsed=$(printf '%s\n' "$sigs" | grep -c . || true)
+if [ "$defs" -eq 0 ] || [ "$parsed" -ne "$defs" ]; then
+  echo "could not parse every SIG_ definition in hook-signatures.hpp ($parsed of $defs)"
+  exit 1
+fi
 status=0
-for sig in $(sed -n 's/^#define SIG_[A-Z_]* *"\(.*\)"$/\1/p' "$here/hook-signatures.hpp" | tr ' ' '\037'); do
+for sig in $(printf '%s\n' "$sigs" | tr ' ' '\037'); do
   sig=$(printf '%s' "$sig" | tr '\037' ' ')
   count=$(printf '%s\n' "$symbols" | grep -cxF -- "$sig" || true)
   if [ "$count" -eq 1 ]; then
@@ -19,5 +26,4 @@ for sig in $(sed -n 's/^#define SIG_[A-Z_]* *"\(.*\)"$/\1/p' "$here/hook-signatu
     status=1
   fi
 done
-[ -n "${sig:-}" ] || { echo "no signatures parsed from hook-signatures.hpp"; exit 1; }
 exit $status

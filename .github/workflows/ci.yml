@@ -1,6 +1,7 @@
 # Builds and tests against the latest Hyprland in Arch's repos, on every push
 # and weekly. hypr-xcsd hooks two Hyprland internals; when an upstream release
-# changes them, the weekly run fails before that Hyprland reaches your machine.
+# changes them, the weekly run usually flags it early (not guaranteed: a
+# release can land between runs). It doesn't load the plugin or test dragging.
 name: ci
 on:
   push:
