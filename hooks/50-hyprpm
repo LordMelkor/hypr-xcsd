@@ -1,0 +1,7 @@
+#!/bin/bash
+# Omarchy post-update hook: hyprpm rebuilds for the installed Hyprland ABI.
+# Its normal output and notifications report build failures/restart requirements.
+if ! hyprpm update; then
+  notify-send "Hyprland plugin update needs attention" \
+    "Check the hyprpm output in the Omarchy update log. A session restart may be required." || true
+fi

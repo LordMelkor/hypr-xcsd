@@ -1,28 +1,17 @@
-# Builds hypr-xcsd against the installed Hyprland headers.
-#
-# Output: $(OUTDIR)/<hyprland-commit>-<source-hash>.so, plus a pointer file
-# $(OUTDIR)/<hyprland-commit>.current holding that filename (what the loader
-# reads). The commit means a build is never loaded into a different Hyprland.
-# The source hash gives every build a new path: the plugin can't truly be
-# unloaded (it stays mapped), and loading an already-mapped path again returns
-# the old code, so a rebuilt plugin must never reuse a path.
-HDR     := /usr/include/hyprland/src/version.h
-HASH    := $(shell sed -n 's/^\#define GIT_COMMIT_HASH *"\(.*\)"/\1/p' $(HDR))
-SRCHASH := $(shell sha256sum main.cpp | cut -c1-8)
-OUTDIR  ?= $(HOME)/.local/lib/hypr-xcsd
-SO      := $(OUTDIR)/$(HASH)-$(SRCHASH).so
-CXXFLAGS = -shared -fPIC -O2 -std=c++26 -Wall -Wno-unused-parameter $(shell pkg-config --cflags hyprland pixman-1 libdrm xcb)
+# hyprpm supplies PKG_CONFIG_PATH for its ABI-matched Hyprland headers.
+CXX ?= c++
+PKG_CONFIG ?= pkg-config
+CPPFLAGS += $(shell $(PKG_CONFIG) --cflags hyprland pixman-1 libdrm xcb)
+CXXFLAGS ?= -O2
+CXXFLAGS += -std=c++26 -fPIC -Wall -Wno-unused-parameter
+LDFLAGS += -shared
 
-all: $(SO)
-	echo $(notdir $(SO)) > $(OUTDIR)/$(HASH).current.tmp
-	mv $(OUTDIR)/$(HASH).current.tmp $(OUTDIR)/$(HASH).current
+all: hypr-xcsd.so
 
-$(SO): main.cpp $(HDR)
-	@mkdir -p $(OUTDIR)
-	$(CXX) $(CXXFLAGS) main.cpp -o $@.tmp
-	mv $@.tmp $@
+hypr-xcsd.so: main.cpp
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(LDFLAGS) $< -o $@
 
-hash:
-	@echo $(HASH)
+clean:
+	rm -f hypr-xcsd.so
 
-.PHONY: all hash
+.PHONY: all clean

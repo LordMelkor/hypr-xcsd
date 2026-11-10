@@ -1,0 +1,9 @@
+[repository]
+name = "hypr-xcsd"
+authors = ["LordMelkor"]
+
+[hypr-xcsd]
+description = "Native move/resize for XWayland client-side-decorated windows"
+authors = ["LordMelkor"]
+output = "hypr-xcsd.so"
+build = ["make all"]
