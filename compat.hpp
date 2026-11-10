@@ -3,14 +3,15 @@
 // into a backend (X11/Wayland), metadata and presentation; 0.56 kept these as
 // members. main.cpp uses only these helpers, so it reads the same on both.
 //
-// Include after Window.hpp (and, for 0.57, X11Backend.hpp with private access).
+// Include after Window.hpp. Uses only public API on 0.57.
 
 #ifdef XCSD_HYPRLAND_057
 namespace XcsdCompat {
-    inline SP<CXWaylandSurface> xsurface(const PHLWINDOW& w) {
+    // The X11 window ID, set when the backend is created (CreateNotify, before map).
+    inline std::optional<xcb_window_t> x11id(const PHLWINDOW& w) {
         if (!w || !w->backend().isX11())
-            return nullptr;
-        return static_cast<Desktop::View::CX11Backend&>(w->backend()).m_xwaylandSurface.lock();
+            return std::nullopt;
+        return sc<xcb_window_t>(w->backend().clientID().id);
     }
     inline const std::string& title(const PHLWINDOW& w) {
         return w->metadata().title();
@@ -27,8 +28,11 @@ namespace XcsdCompat {
 }
 #else
 namespace XcsdCompat {
-    inline SP<CXWaylandSurface> xsurface(const PHLWINDOW& w) {
-        return w ? w->m_xwaylandSurface.lock() : nullptr;
+    inline std::optional<xcb_window_t> x11id(const PHLWINDOW& w) {
+        const auto xs = w ? w->m_xwaylandSurface.lock() : nullptr;
+        if (!xs)
+            return std::nullopt;
+        return xs->m_xID;
     }
     inline const std::string& title(const PHLWINDOW& w) {
         return w->m_title;

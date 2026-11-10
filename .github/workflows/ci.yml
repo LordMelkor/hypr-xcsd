@@ -23,8 +23,10 @@ jobs:
         include:
           - name: hyprland-0.56.2
             snapshot: "2026/10/20"
+            expect: "0.56.2-"
           - name: hyprland-latest
             snapshot: ""
+            expect: ""
     name: ${{ matrix.name }}
     steps:
       - name: Pin repositories to the snapshot
@@ -34,6 +36,9 @@ jobs:
         run: pacman -Syyuu --noconfirm --needed base-devel git hyprland pixman libdrm libxcb python lua
       - uses: actions/checkout@v4
       - name: Hyprland version under test
-        run: pacman -Q hyprland
+        run: |
+          pacman -Q hyprland
+          # A pinned job must test the version it's named for, not whatever the snapshot resolves to.
+          if [ -n "${{ matrix.expect }}" ]; then pacman -Q hyprland | grep -q " ${{ matrix.expect }}"; fi
       - name: Build and test
         run: make test

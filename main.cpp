@@ -17,8 +17,9 @@
 // Init fails closed (throws, so
 // Hyprland unloads us) unless both hooks resolve uniquely and install.
 
-// Standard and Hyprland headers first, so the access hack below only touches
-// the XWM class (we need its private getConnection()).
+// The access hack below is needed for XWM's private getConnection(). Standard
+// and other Hyprland headers are included first so it reaches as little else
+// as possible; it still applies to whatever XWM.hpp itself includes.
 #include <any>
 #include <sstream>
 #include <hyprland/src/plugins/PluginAPI.hpp>
@@ -34,11 +35,8 @@
 #if __has_include(<hyprland/src/desktop/view/window/Window.hpp>)
 #define XCSD_HYPRLAND_057
 #include <hyprland/src/desktop/view/window/Window.hpp>
-#define private public
-#include <hyprland/src/desktop/view/window/X11Backend.hpp>
 #include <hyprland/src/desktop/view/window/WindowPresentation.hpp>
 #include <hyprland/src/desktop/view/window/WindowMetadata.hpp>
-#undef private
 #else
 #include <hyprland/src/desktop/view/Window.hpp>
 #endif
@@ -91,8 +89,7 @@ enum : uint32_t {
 
 static PHLWINDOW windowForXID(xcb_window_t xid) {
     for (const auto& w : Desktop::windowState()->windows()) {
-        const auto xs = XcsdCompat::xsurface(w);
-        if (xs && xs->m_xID == xid)
+        if (XcsdCompat::x11id(w) == xid)
             return w;
     }
     return nullptr;
@@ -245,7 +242,7 @@ static void cancelDrain() {
 
 static void clearTags() {
     for (const auto& w : Desktop::windowState()->windows())
-        if (XcsdCompat::xsurface(w))
+        if (XcsdCompat::x11id(w))
             setTag(w, false);
 }
 
@@ -254,10 +251,10 @@ static void sweepExisting() {
         return;
     auto* conn = g_pXWayland->m_wm->getConnection();
     for (const auto& w : Desktop::windowState()->windows()) {
-        const auto xs = XcsdCompat::xsurface(w);
-        if (!xs || xs->m_overrideRedirect)
+        const auto id = XcsdCompat::x11id(w);
+        if (!id || XcsdCompat::overrideRedirect(w))
             continue;
-        auto* r = fetchMotif(conn, xs->m_xID);
+        auto* r = fetchMotif(conn, *id);
         applyMotif(w, r); // the window is known; avoid another O(W) lookup
         free(r);
     }
