@@ -1,7 +1,21 @@
 #!/bin/bash
-# Omarchy post-update hook: hyprpm rebuilds for the installed Hyprland ABI.
-# Its normal output and notifications report build failures/restart requirements.
-if ! hyprpm update; then
-  notify-send "Hyprland plugin update needs attention" \
-    "Check the hyprpm output in the Omarchy update log. A session restart may be required." || true
+# hyprpm owns updates. It can unload the current plugin even on a failed build.
+# 0.56.2 also runs sudo -k; explicitly restore enclosing Omarchy authorization.
+# This can prompt again. No second keepalive or competing binary loader is used.
+set -u
+update_status=0
+hyprpm update || update_status=$?
+if [[ ${OMARCHY_UPDATE_LOGGED:-0} == 1 ]]; then
+  if ! sudo true; then
+    notify-send "Omarchy authorization needs renewal" \
+      "hyprpm expired sudo authorization. Later update steps may need authentication." || true
+    exit 1
+  fi
 fi
+check_status=0
+"$HOME/.local/bin/hypr-xcsd-check" --notify || check_status=$?
+if (( update_status != 0 )); then
+  echo "hyprpm update returned $update_status; inspect its output above (a new session may be required)." >&2
+  exit "$update_status"
+fi
+exit "$check_status"

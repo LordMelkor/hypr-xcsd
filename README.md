@@ -19,6 +19,8 @@ normal user; it requests sudo when needed.
 For this locally developed repository (commit source changes before updating):
 
 ```sh
+cd ~/.local/share/hyprland/plugins/hypr-xcsd
+install -m 755 scripts/hypr-xcsd-check ~/.local/bin/hypr-xcsd-check
 hyprpm update
 hyprpm add "file://$HOME/.local/share/hyprland/plugins/hypr-xcsd"
 hyprpm enable hypr-xcsd
@@ -36,8 +38,9 @@ end
 ```
 
 The config fragment grants `/usr/bin/hyprpm` permission to load plugins, runs
-`hyprpm reload` at session start and supplies the titlebar rule. Run
-`hyprpm reload` once when adding it to an existing session. Manually loaded
+`hyprpm reload` at session start, observes actual loaded presence with
+`hypr-xcsd-check`, and supplies the titlebar rule. Run `hyprpm reload` and
+`hypr-xcsd-check` once when adding it to an existing session. Manually loaded
 plugins survive ordinary config reloads; no custom Lua binary loader is needed.
 
 The local source repository stays at
@@ -53,15 +56,32 @@ Once that manifest is published, other users can register its HTTPS URL instead.
 ## Updates and recovery
 
 The installed Omarchy `post-update` hook calls `hyprpm update`. This rebuilds
-against the installed Hyprland when its headers/ABI change. If Hyprland itself
-was updated during the session, hyprpm leaves loading for a matching session;
-restart Hyprland when prompted. At the next login `hyprpm reload` loads enabled
-plugins. Direct pacman upgrades outside `omarchy update` require a manual
-`hyprpm update` too. A broken build still needs a source compatibility fix.
+against the installed Hyprland when its headers/ABI change. Updates can unload
+the current plugin and replace its managed repository, even on the same ABI.
+A failed compile can remove the previous working managed binary; hyprpm is not
+a last-good-artifact backup. Fix source compatibility and run `hyprpm update`
+again to recover. Native controls/Super-drag remain the fallback.
 
-Ordinary plugin updates do not forcibly hot-swap an already loaded binary.
-After rebuilding a changed plugin, use a fresh session to ensure the new code
-is mapped. This matters because libraries may remain mapped after unload.
+If installed and running Hyprland differ, loading the new ABI is deferred until
+a matching session. Start a new session when prompted. Even on the same ABI,
+unload/reload may reuse resident library code; a fresh session is the reliable
+code-version boundary. A no-update hook check does not test replacement or
+failed-build behavior. Direct pacman upgrades outside `omarchy update` require
+a manual `hyprpm update` too.
+
+Hyprpm 0.56.2 runs `sudo -k` when update exits. Inside Omarchy's update the hook
+explicitly runs `sudo true` afterwards to renew the enclosing authorization.
+This can prompt again; uninterrupted single-prompt authorization is not
+promised. No second keepalive or patched sudo/hyprpm binary is introduced.
+
+Hyprpm's successful exit does not prove a plugin loaded: this version discards
+plugin-load IPC replies, and enabled failed builds can be skipped. The installed
+`hypr-xcsd-check` observes enabled/build/ABI state and the actual plugin list.
+It stays quiet for deliberately disabled plugins, distinguishes deferred ABI
+loading, and warns if enabled but absent. It never builds, loads, retries or
+tracks drag state. Presence is still not behavioral proof or proof that newly
+compiled code replaced a resident DSO. Hook failures remain nonzero so Omarchy
+can report them instead of silently swallowing them.
 
 Useful commands:
 
@@ -69,6 +89,7 @@ Useful commands:
 hyprpm list
 hyprpm update
 hyprpm reload
+hypr-xcsd-check
 hyprpm disable hypr-xcsd
 hyprpm enable hypr-xcsd
 ```
@@ -90,9 +111,12 @@ or separate plugin-loading service.
 for decoration hints. Both hook points must resolve and install, or plugin
 initialization fails. Hyprland owns drag state: a drag starts only with a held
 mouse button, cannot replace an existing drag, and ends natively on release.
-Cancel requests only stop a drag from the same window. The decoration decision
-lives in the window tag; changing valid Motif hints updates it, and unloading
-removes tags. Existing windows are checked on load; new windows are checked
+Cancel requests only stop a drag from the same window. The reserved plugin-owned static `x11-csd` tag mirrors only a valid explicit
+Motif no-decoration hint. Explicit decorations, absent/deleted hints and malformed
+hints restore the server bar. A move/resize request never changes this decision:
+a resize grip alone is not evidence of titlebar or close controls. Do not assign
+the static tag independently; plugin unload clears it. No per-window evidence
+cache or app-name list is maintained. Existing windows are checked on load; new windows are checked
 before mapping. Atoms are looked up per request rather than cached across
 Xwayland restarts (that restart case has not been tested end to end).
 
@@ -101,5 +125,27 @@ requires its plugin to support `hyprbars:no_bar`. The user's
 `~/.config/hypr/keep-below-bar.lua` treats `x11-csd` as a zero-height extra bar.
 Hyprland API changes may require source changes after an upgrade.
 
+The plugin exposes `hl.plugin.xcsd.drag_active()` as a read-only view of native
+drag state. The user's bar correction consults it at callback time, including
+focus events (which can mean drag start or end). It never moves a window during
+a native drag. With this plugin absent/older, the correction conservatively
+spares the cursor window and may wait until the cursor leaves it. Its recurring
+check excludes hidden/fullscreen/invisible windows and coalesces event bursts.
+
+The load sweep uses known window references instead of repeated XID searches.
+Its X-event drain is an owned cancellable Wayland idle source, removed on unload
+and failed initialization. Failed init rolls back decoration tags; Hyprland
+cleans hooks and registered Lua functions. Property reads before mapping are
+still synchronous; they may occur more than once and are not assumed to always
+run from XWM::onEvent. There is no new asynchronous property cache.
+
 For debug traces, set `HYPR_XCSD_DEBUG=1` in Hyprland's environment before
 loading; decisions are logged to `$XDG_RUNTIME_DIR/hypr-xcsd.log`.
+
+## Targeted regression checks
+
+Run `c++ -std=c++20 tests/decoration-policy.cpp -o /tmp/xcsd-policy && /tmp/xcsd-policy`,
+`lua tests/bar-correction.lua ~/.config/hypr/keep-below-bar.lua`, and
+`python3 tests/maintenance.py`. These cover policy boundaries, focus/release
+state handling, scheduling, health-state distinctions and hook exit/auth order.
+They supplement live tests; they do not simulate a real OS/ABI upgrade.

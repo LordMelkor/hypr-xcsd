@@ -8,7 +8,7 @@ LDFLAGS += -shared
 
 all: hypr-xcsd.so
 
-hypr-xcsd.so: main.cpp
+hypr-xcsd.so: main.cpp decoration-policy.hpp
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(LDFLAGS) $< -o $@
 
 clean:

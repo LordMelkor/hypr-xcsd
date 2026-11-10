@@ -11,8 +11,10 @@
 //   CXWM::readProp             _MOTIF_WM_HINTS "no decorations" -> tag
 //                              x11-csd (re-evaluated whenever the hint changes).
 //
-// State: none of our own. Drag state lives in Hyprland's drag controller; the
-// title-bar decision lives in the window's tag. Init fails closed (throws, so
+// Drag state lives in Hyprland's drag controller. The plugin-owned x11-csd
+// tag mirrors explicit Motif no-decoration hints, never move/resize capability.
+// A cancellable Wayland idle source drains X events after the load sweep.
+// Init fails closed (throws, so
 // Hyprland unloads us) unless both hooks resolve uniquely and install.
 
 // Standard and Hyprland headers first, so the access hack below only touches
@@ -33,12 +35,14 @@
 #include <hyprland/src/layout/supplementary/DragController.hpp>
 #include <hyprland/src/layout/target/Target.hpp>
 #include <hyprland/src/managers/input/InputManager.hpp>
-#include <hyprland/src/managers/eventLoop/EventLoopManager.hpp>
+#include <hyprland/src/Compositor.hpp>
+#include <lua.hpp>
 #include <hyprland/src/event/EventBus.hpp>
 
 #include <cstdio>
 #include <cstdlib>
 #include <stdexcept>
+#include "decoration-policy.hpp"
 
 // Debug trace: set HYPR_XCSD_DEBUG=1 in Hyprland's environment (hl.env) to
 // log decisions to $XDG_RUNTIME_DIR/hypr-xcsd.log.
@@ -62,7 +66,8 @@ static HANDLE         g_handle     = nullptr;
 static CFunctionHook* g_hookCM     = nullptr;
 static CFunctionHook* g_hookProp   = nullptr;
 
-static const char*    TAG          = "x11-csd";
+static const char*    TAG          = "x11-csd"; // reserved: plugin-owned static tag
+static wl_event_source* g_drainIdle = nullptr;
 
 // _NET_WM_MOVERESIZE directions (EWMH)
 enum : uint32_t {
@@ -90,34 +95,31 @@ static void setTag(const PHLWINDOW& w, bool on) {
     dbg("tag %s %s mapped=%d", on ? "+" : "-", w->m_title.c_str(), (int)w->m_isMapped);
     w->m_ruleApplicator->m_tagKeeper.applyTag(std::string(on ? "+" : "-") + TAG);
     if (w->m_isMapped) {
+        // Visible windows already update decorations and notify plugins here.
         w->m_ruleApplicator->propertiesChanged(Desktop::Rule::RULE_PROP_TAG);
-        w->updateDecorationValues();
-        // Decoration plugins (Omarchy's title bars) re-read rules on this.
-        Event::bus()->m_events.window.updateRules.emit(w);
+        if (w->isHidden()) {
+            w->updateDecorationValues();
+            Event::bus()->m_events.window.updateRules.emit(w);
+        }
     }
 }
 
 // Motif hints: flags, functions, decorations, input_mode, status. Flag bit 1
 // (MWM_HINTS_DECORATIONS) means the decorations field is valid; 0 = none.
-static std::optional<bool> motifNoDecorations(xcb_get_property_reply_t* reply) {
-    if (!reply || reply->format != 32 || xcb_get_property_value_length(reply) < 12)
-        return std::nullopt;
-    const auto* v = (const uint32_t*)xcb_get_property_value(reply);
-    return (v[0] & 2) && v[2] == 0;
+static bool motifNoDecorations(xcb_get_property_reply_t* reply) {
+    if (!reply)
+        return false;
+    const auto* fields = static_cast<const uint32_t*>(xcb_get_property_value(reply));
+    return Xcsd::requestsNoDecorations(reply->format,
+        {fields, static_cast<size_t>(xcb_get_property_value_length(reply)) / sizeof(uint32_t)});
 }
 
-static void applyMotif(const SP<CXWaylandSurface>& xs, xcb_get_property_reply_t* reply) {
-    if (!xs || xs->m_overrideRedirect)
-        return;
-    const auto w = windowForXID(xs->m_xID);
+static void applyMotif(const PHLWINDOW& w, xcb_get_property_reply_t* reply) {
     if (!w)
         return;
-    // No/invalid hint = "decorate me": untag, unless a MOVERESIZE already proved CSD.
-    const auto noDeco = motifNoDecorations(reply);
-    if (noDeco.value_or(false))
-        setTag(w, true);
-    else if (noDeco.has_value())
-        setTag(w, false);
+    // Only an explicit valid "no decorations" hint suppresses the server bar.
+    // Missing/deleted/malformed hints and explicit decorations all restore it.
+    setTag(w, motifNoDecorations(reply));
 }
 
 static xcb_get_property_reply_t* fetchMotif(xcb_connection_t* conn, xcb_window_t xid) {
@@ -143,8 +145,8 @@ static void onMoveResize(xcb_client_message_event_t* e) {
     if (dir > MR_MOVE) // keyboard-driven variants: not supported
         return;
 
-    // Asking to be moved by its own title bar proves it draws one.
-    setTag(w, true);
+    // Interaction capability is independent of decoration policy: a decorated
+    // client can have a resize grip without providing titlebar/close controls.
 
     // Only start while a button is actually held (the release ends the drag
     // natively); never start a second drag.
@@ -177,18 +179,21 @@ typedef void (*origReadProp)(void*, SP<CXWaylandSurface>, uint32_t, xcb_get_prop
 static void hkReadProp(void* thisptr, SP<CXWaylandSurface> xs, uint32_t atom, xcb_get_property_reply_t* reply) {
     ((origReadProp)g_hookProp->m_original)(thisptr, xs, atom, reply);
     try {
+        if (!xs || xs->m_overrideRedirect)
+            return;
+        const auto w = windowForXID(xs->m_xID);
+        if (!w)
+            return;
         if (atom == HYPRATOMS["_MOTIF_WM_HINTS"]) {
-            // Hint changed (PropertyNotify): the reply is already in hand.
-            applyMotif(xs, reply);
+            // Includes deletion replies; no extra round trip for PropertyNotify.
+            applyMotif(w, reply);
         } else if (atom == HYPRATOMS["_NET_WM_WINDOW_TYPE"]) {
-            // Read once per map (readWindowData), before the window maps and
-            // rules apply, so the bar never appears. We're inside CXWM::onEvent,
-            // so a synchronous round trip is safe here.
+            // readWindowData can run more than once and outside XWM::onEvent.
+            // Query before initial mapping as well, to avoid a duplicate bar.
             auto* wm = (CXWM*)thisptr;
-            if (auto* r = fetchMotif(wm->getConnection(), xs->m_xID)) {
-                applyMotif(xs, r);
-                free(r);
-            }
+            auto* r = fetchMotif(wm->getConnection(), xs->m_xID);
+            applyMotif(w, r);
+            free(r);
         }
     } catch (...) {}
 }
@@ -211,8 +216,21 @@ static CFunctionHook* hookUnique(const std::string& name, const std::string& dem
     return hook;
 }
 
-// Tag windows that were already open when we loaded. This runs outside
-// CXWM::onEvent, so drain any events our round trips queued afterwards.
+// An owned native idle source can be cancelled even when another idle callback
+// unloads us. No plugin std::function is left in Hyprland's copied idle batch.
+static void cancelDrain() {
+    if (g_drainIdle) {
+        wl_event_source_remove(g_drainIdle);
+        g_drainIdle = nullptr;
+    }
+}
+
+static void clearTags() {
+    for (const auto& w : Desktop::windowState()->windows())
+        if (w->m_xwaylandSurface.lock())
+            setTag(w, false);
+}
+
 static void sweepExisting() {
     if (!g_pXWayland || !g_pXWayland->m_wm)
         return;
@@ -221,15 +239,23 @@ static void sweepExisting() {
         const auto xs = w->m_xwaylandSurface.lock();
         if (!xs || xs->m_overrideRedirect)
             continue;
-        if (auto* r = fetchMotif(conn, xs->m_xID)) {
-            applyMotif(xs, r);
-            free(r);
-        }
+        auto* r = fetchMotif(conn, xs->m_xID);
+        applyMotif(w, r); // the window is known; avoid another O(W) lookup
+        free(r);
     }
-    g_pEventLoopManager->doLater([] {
+    g_drainIdle = wl_event_loop_add_idle(g_pCompositor->m_wlEventLoop, [](void*) {
+        g_drainIdle = nullptr;
         if (g_pXWayland && g_pXWayland->m_wm)
             g_pXWayland->m_wm->onEvent(-1, WL_EVENT_READABLE);
-    });
+    }, nullptr);
+    if (!g_drainIdle)
+        throw std::runtime_error("hypr-xcsd: cannot schedule X event drain");
+}
+
+// Read-only integration point: no second drag state machine in Lua.
+static int luaDragActive(lua_State* L) {
+    lua_pushboolean(L, g_layoutManager && !!g_layoutManager->dragController()->target());
+    return 1;
 }
 
 APICALL EXPORT std::string PLUGIN_API_VERSION() {
@@ -242,18 +268,24 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     if (std::string(__hyprland_api_get_hash()) != __hyprland_api_get_client_hash())
         throw std::runtime_error("hypr-xcsd: built for a different Hyprland");
 
-    g_hookCM   = hookUnique("handleClientMessage", "CXWM::handleClientMessage", (void*)&hkClientMessage);
-    g_hookProp = hookUnique("readProp", "CXWM::readProp", (void*)&hkReadProp);
-
-    dbg("init ok");
-    sweepExisting();
-
-    return {"hypr-xcsd", "Native move/resize for XWayland client-side-decorated windows", "local", "1.0"};
+    try {
+        g_hookCM   = hookUnique("handleClientMessage", "CXWM::handleClientMessage", (void*)&hkClientMessage);
+        g_hookProp = hookUnique("readProp", "CXWM::readProp", (void*)&hkReadProp);
+        if (!HyprlandAPI::addLuaFunction(handle, "xcsd", "drag_active", luaDragActive))
+            throw std::runtime_error("hypr-xcsd: cannot expose native drag state");
+        dbg("init ok");
+        sweepExisting();
+        return {"hypr-xcsd", "Native move/resize for XWayland client-side-decorated windows", "local", "1.1"};
+    } catch (...) {
+        cancelDrain();
+        try { clearTags(); } catch (...) {}
+        // Hyprland removes hooks/Lua functions on failed init; EXIT is skipped.
+        throw;
+    }
 }
 
 APICALL EXPORT void PLUGIN_EXIT() {
-    // Give the title bars back; hooks are removed by Hyprland.
-    for (const auto& w : Desktop::windowState()->windows())
-        if (w->m_xwaylandSurface.lock())
-            setTag(w, false);
+    cancelDrain();
+    // Give the title bars back; hooks and Lua functions are removed by Hyprland.
+    clearTags();
 }
