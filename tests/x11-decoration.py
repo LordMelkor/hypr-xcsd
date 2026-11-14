@@ -55,6 +55,31 @@ try:
  hint([2],8);expect(False,'wrong format restores bar')
  unmap(d,win);sync();mapwin(d,win);sync();expect(False,'remap does not revive stale evidence')
  ctl('eval','assert(hl.plugin.xcsd.drag_active() == false)')
+ address=client()['address']
+ ctl('eval',f'assert(hl.plugin.xcsd.override_redirect("{address}") == false)')
+ ctl('eval','assert(hl.plugin.xcsd.override_redirect("not-an-address") == nil)')
+ ctl('eval','assert(hl.plugin.xcsd.override_redirect("0x1") == nil)')
+ # Override-redirect is a protocol property, independent of window titles,
+ # decoration hints and dimensions. Check it on a second real X11 window.
+ popup=api('XCreateSimpleWindow',ul,[ptr,ul,integer,integer,C.c_uint,C.c_uint,C.c_uint,ul,ul])(d,root,300,100,180,80,0,0,0)
+ class Attributes(C.Structure):
+  _fields_=[('background_pixmap',ul),('background_pixel',ul),('border_pixmap',ul),('border_pixel',ul),
+    ('bit_gravity',integer),('win_gravity',integer),('backing_store',integer),('backing_planes',ul),
+    ('backing_pixel',ul),('save_under',integer),('event_mask',C.c_long),('do_not_propagate_mask',C.c_long),
+    ('override_redirect',integer),('colormap',ul),('cursor',ul)]
+ attrs=Attributes();attrs.override_redirect=1
+ api('XChangeWindowAttributes',integer,[ptr,ul,ul,C.POINTER(Attributes)])(d,popup,1<<9,C.byref(attrs))
+ name(d,popup,b'xcsd isolated popup test');mapwin(d,popup);sync()
+ try:
+  for _ in range(100):
+   found=next((w for w in json.loads(ctl('clients','-j')) if w.get('title')=='xcsd isolated popup test'),None)
+   if found:break
+   time.sleep(.02)
+  assert found, 'popup fixture was not mapped'
+  ctl('eval',f'assert(hl.plugin.xcsd.override_redirect("{found["address"]}") == true)')
+  results.append('managed and override-redirect queries use live protocol state')
+ finally:
+  api('XDestroyWindow',integer,[ptr,ul])(d,popup);sync()
  if os.environ.get('XCSD_INIT_FAIL_SO'):
   hint([2,0,0,0,0]);expect(True,'setup tagged window before unload')
   ctl('plugin','unload',os.environ['XCSD_SO']);expect(False,'unload restores server bar')

@@ -1,15 +1,17 @@
 -- Signal/state regression checks against the actual installed Lua module.
 local subject = assert(arg[1], "pass keep-below-bar.lua path")
-local timers, events, releases, moves, w, cursor, active
+local timers, events, releases, moves, w, cursor, active, popup
 local function setup(native)
   timers, events, releases, moves = {}, {}, {}, 0
   active = true
+  popup = false
   cursor = { x = 200, y = 10 }
   w = {address='123',floating=true,mapped=true,hidden=false,fullscreen=0,
     tags={'omarchy-floating-workspace','x11-csd'},at={x=100,y=0},size={x=500,y=300},
     monitor={y=0,reserved={top=26}},workspace={visible=true},xwayland=true}
   hl = {
-    plugin = native and {xcsd={drag_active=function() return active end}} or {},
+    plugin = native and {xcsd={drag_active=function() return active end,
+      override_redirect=function(address) assert(address==w.address);return popup end}} or {},
     get_config=function() return 30 end,
     get_cursor_pos=function() return cursor end,
     get_windows=function() return {w} end,
@@ -53,4 +55,18 @@ end
 setup(true)
 events['layer.opened']();events['layer.closed']();events['workspace.active']()
 assert(#timers==1, 'coalesce structural event bursts')
-print('bar correction: 9 state/signal and scheduling assertions passed')
+setup(true)
+popup=true;active=false
+run(100)
+assert(moves==0 and #timers==0, 'unmanaged X11 popups own their placement and need no polling')
+setup(true)
+active=false
+hl.plugin.xcsd.override_redirect=function() return nil end
+run(100)
+assert(moves==1, 'unknown classification preserves the existing placement fallback')
+setup(true)
+active=false
+hl.plugin.xcsd.override_redirect=nil
+run(100)
+assert(moves==1, 'older plugins preserve the existing placement fallback')
+print('bar correction: 12 state/signal and scheduling assertions passed')

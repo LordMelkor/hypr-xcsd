@@ -66,6 +66,14 @@ hyprpm details worth knowing (as of hyprpm 0.56.2):
 - **Starting a drag:** only while a mouse button is held. A drag never replaces one already in progress. Releasing the button ends it, as with any Hyprland drag. Hyprland keeps that release to end the drag, so it's forwarded to the app afterwards; otherwise the app would think the button is still held and ignore its next press. It is never sent at the start, because GTK cancels a move when it sees its button's release. Like Super + drag, the drag doesn't take pointer focus from the window. A cancel request only stops a drag started by the same window.
 - **Keyboard move and resize:** EWMH directions 9 and 10 are ignored.
 - **The `x11-csd` tag** mirrors only a valid, explicit Motif "no decorations" hint. If the hint is absent, deleted, malformed or asks for decorations, Omarchy's bar comes back. Sending a move request doesn't change the decision. Windows are checked before they first appear, and windows already open are checked when the plugin loads. Unloading the plugin removes the tags.
+
+Lua integrations can query `hl.plugin.xcsd.override_redirect(window.address)`
+before correcting window placement. It returns the live X11 override-redirect
+flag, `false` for managed or Wayland windows, and `nil` for an invalid or no
+longer live address. Menus and tooltips with this flag own their placement and
+should be excluded from policies intended for managed windows. The query is
+read-only and does not depend on application names, window sizes or hints about
+decorations.
 - **For other Lua code:** `hl.plugin.xcsd.drag_active()` returns whether Hyprland's native drag is running.
 - **Debug trace:** set `HYPR_XCSD_DEBUG=1` in Hyprland's environment before the plugin first loads in a session. The setting is read once per session: unloading and reloading may reuse the same resident code, which keeps the first value. Decisions are logged to `$XDG_RUNTIME_DIR/hypr-xcsd.log`.
 

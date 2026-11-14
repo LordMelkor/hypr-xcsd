@@ -333,6 +333,32 @@ static int luaDragActive(lua_State* L) {
     return 1;
 }
 
+// Window addresses are opaque identifiers supplied by Hyprland's Lua API.
+// Compare with live windows rather than dereferencing a caller's address.
+static int luaOverrideRedirect(lua_State* L) {
+    const char* address = luaL_checkstring(L, 1);
+    uintptr_t id = 0;
+    try {
+        size_t end = 0;
+        id = std::stoull(address, &end, 16);
+        if (address[end] != '\0') {
+            lua_pushnil(L);
+            return 1;
+        }
+    } catch (...) {
+        lua_pushnil(L);
+        return 1;
+    }
+    for (const auto& w : Desktop::windowState()->windows()) {
+        if (reinterpret_cast<uintptr_t>(w.get()) == id) {
+            lua_pushboolean(L, XcsdCompat::overrideRedirect(w));
+            return 1;
+        }
+    }
+    lua_pushnil(L);
+    return 1;
+}
+
 APICALL EXPORT std::string PLUGIN_API_VERSION() {
     return HYPRLAND_API_VERSION;
 }
@@ -349,6 +375,8 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         g_buttonListener = Event::bus()->m_events.input.mouse.button.listen(onButton);
         if (!HyprlandAPI::addLuaFunction(handle, "xcsd", "drag_active", luaDragActive))
             throw std::runtime_error("hypr-xcsd: cannot expose native drag state");
+        if (!HyprlandAPI::addLuaFunction(handle, "xcsd", "override_redirect", luaOverrideRedirect))
+            throw std::runtime_error("hypr-xcsd: cannot expose X11 popup classification");
         dbg("init ok");
         sweepExisting();
         return {"hypr-xcsd", "Native move/resize for XWayland client-side-decorated windows", "local", "1.1"};
