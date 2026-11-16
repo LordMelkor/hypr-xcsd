@@ -11,6 +11,12 @@
 //   CXWM::readProp             _MOTIF_WM_HINTS "no decorations" -> tag
 //                              x11-csd (re-evaluated whenever the hint changes).
 //
+// The first hook also honours _NET_WM_STATE maximize from an x11-csd window
+// that a suppress_event = "maximize" rule blocks, when it follows a click on
+// that window: the hidden server bar was its only other maximize control.
+// x11-csd windows are told when they are maximized (Hyprland never reports
+// it to X11 apps), so their own button can show and request restore.
+//
 // Drag state lives in Hyprland's drag controller. The plugin-owned x11-csd
 // tag mirrors explicit Motif no-decoration hints, never move/resize capability.
 // A cancellable Wayland idle source drains X events after the load sweep.
@@ -30,6 +36,7 @@
 #include <hyprland/src/desktop/view/window/Window.hpp>
 #include <hyprland/src/desktop/view/window/WindowPresentation.hpp>
 #include <hyprland/src/desktop/view/window/WindowMetadata.hpp>
+#include <hyprland/src/desktop/view/window/WindowFullscreenPolicy.hpp>
 #else
 #include <hyprland/src/desktop/view/Window.hpp>
 #endif
@@ -39,10 +46,12 @@
 #include <hyprland/src/layout/target/Target.hpp>
 #include <hyprland/src/managers/input/InputManager.hpp>
 #include <hyprland/src/managers/SeatManager.hpp>
+#include <hyprland/src/managers/fullscreen/FullscreenController.hpp>
 #include <hyprland/src/Compositor.hpp>
 #include <lua.hpp>
 #include <hyprland/src/event/EventBus.hpp>
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <stdexcept>
@@ -113,12 +122,24 @@ static bool hasTag(const PHLWINDOW& w) {
     return w->m_ruleApplicator->m_tagKeeper.isTagged(TAG, true);
 }
 
+// What an X11 app is told about being maximized mirrors Hyprland's client
+// fullscreen mode, for x11-csd windows only; everything else stays as Hyprland
+// leaves it (never reported). Hyprland owns the mode; this only reflects it.
+static void syncReportedMaximize(const PHLWINDOW& w) {
+    if (!w || !XcsdCompat::x11id(w) || XcsdCompat::overrideRedirect(w))
+        return;
+    const bool maximized = hasTag(w) && XcsdCompat::mapped(w) &&
+        Fullscreen::controller()->getFullscreenModes(w).client == Fullscreen::FSMODE_MAXIMIZED;
+    XcsdCompat::reportMaximized(w, maximized);
+}
+
 // Static tag (survives rule re-evaluation), same effect as `hl.dsp.window.tag`.
 static void setTag(const PHLWINDOW& w, bool on) {
     if (hasTag(w) == on)
         return;
     dbg("tag %s %s mapped=%d", on ? "+" : "-", XcsdCompat::title(w).c_str(), (int)XcsdCompat::mapped(w));
     w->m_ruleApplicator->m_tagKeeper.applyTag(std::string(on ? "+" : "-") + TAG);
+    syncReportedMaximize(w);
     if (XcsdCompat::mapped(w)) {
         // Visible windows already update decorations and notify plugins here.
         w->m_ruleApplicator->propertiesChanged(Desktop::Rule::RULE_PROP_TAG);
@@ -165,7 +186,23 @@ static xcb_get_property_reply_t* fetchMotif(xcb_connection_t* conn, xcb_window_t
 static PHLWINDOWREF        g_dragWindow;
 static CHyprSignalListener g_buttonListener;
 
+// The click that arms the maximize gate: the surface a press went to, and the
+// time of that press or of its release on the same surface (apps act on
+// either). Only a press arms, so a release can't re-arm a click a request
+// already consumed. Only the maximize gate reads it.
+static WP<CWLSurfaceResource>                 g_clickSurface;
+static std::chrono::steady_clock::time_point g_clickTime;
+static CHyprSignalListener                   g_fullscreenListener;
+
 static void onButton(IPointer::SButtonEvent e, Event::SCallbackInfo& info) {
+    if (!info.cancelled) {
+        const auto focus = g_pSeatManager->m_state.pointerFocus.lock();
+        if (e.state == WL_POINTER_BUTTON_STATE_PRESSED) {
+            g_clickSurface = focus;
+            g_clickTime    = std::chrono::steady_clock::now();
+        } else if (focus && g_clickSurface.lock() == focus)
+            g_clickTime = std::chrono::steady_clock::now();
+    }
     if (e.state != WL_POINTER_BUTTON_STATE_RELEASED || !g_dragWindow)
         return;
     const auto w = g_dragWindow.lock();
@@ -225,6 +262,50 @@ static void onMoveResize(xcb_client_message_event_t* e) {
         g_dragWindow = w;
 }
 
+// Omarchy suppresses app maximize requests on every window and offers its own
+// title bar button instead. x11-csd windows have that bar hidden, so their own
+// maximize button is the only control left. Honour its request through the
+// same fullscreen-controller call Hyprland uses for client requests, but only
+// right after a click on that window, so a maximize the app makes on its own
+// stays suppressed. Unsuppressed windows are left to Hyprland, which would
+// otherwise act on the request a second time.
+static void onWmState(xcb_client_message_event_t* e) {
+    const auto w = windowForXID(e->window);
+    if (!w || !XcsdCompat::mapped(w) || w->isHidden() || XcsdCompat::overrideRedirect(w) || !hasTag(w) ||
+        !XcsdCompat::suppressesMaximize(w))
+        return;
+
+    const uint32_t a1 = e->data.data32[1], a2 = e->data.data32[2];
+    const uint32_t vert = HYPRATOMS["_NET_WM_STATE_MAXIMIZED_VERT"], horz = HYPRATOMS["_NET_WM_STATE_MAXIMIZED_HORZ"];
+    const bool     namesMaximize = a1 == vert || a1 == horz || a2 == vert || a2 == horz;
+    if (!namesMaximize)
+        return;
+
+    const auto surf    = w->resource();
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - g_clickTime).count();
+    const bool clicked = Xcsd::followsClick(surf && g_clickSurface.lock() == surf, elapsed);
+    const auto client  = Fullscreen::controller()->getFullscreenModes(w).client;
+    dbg("wmstate maximize xid=0x%x action=%u clicked=%d elapsed=%lld client=%d", e->window, e->data.data32[0], (int)clicked,
+        (long long)elapsed, (int)client);
+    if (!clicked || client == Fullscreen::FSMODE_FULLSCREEN)
+        return;
+    // A title-bar press may have started a drag, which ends maximize itself.
+    if (const auto t = g_layoutManager->dragController()->target(); t && t->window() == w) {
+        g_clickSurface.reset();
+        return;
+    }
+
+    const bool maximized = client == Fullscreen::FSMODE_MAXIMIZED;
+    const auto want      = Xcsd::requestedMaximized(e->data.data32[0], true, maximized);
+    if (!want || *want == maximized)
+        return;
+    // One click, one change: a second message in the same second (an app
+    // sending VERT and HORZ separately, or maximizing itself) needs a new click.
+    g_clickSurface.reset();
+    Fullscreen::controller()->setFullscreenMode(w, std::nullopt, *want ? Fullscreen::FSMODE_MAXIMIZED : Fullscreen::FSMODE_NONE);
+    syncReportedMaximize(w);
+}
+
 typedef void (*origClientMessage)(void*, xcb_client_message_event_t*);
 static void hkClientMessage(void* thisptr, xcb_client_message_event_t* e) {
     if (e->format == 32 && e->type == HYPRATOMS["_NET_WM_MOVERESIZE"]) {
@@ -234,6 +315,12 @@ static void hkClientMessage(void* thisptr, xcb_client_message_event_t* e) {
         return;
     }
     ((origClientMessage)g_hookCM->m_original)(thisptr, e);
+    // After Hyprland, so a fullscreen atom in the same message is applied first.
+    if (e->format == 32 && e->type == HYPRATOMS["_NET_WM_STATE"]) {
+        try {
+            onWmState(e);
+        } catch (...) {}
+    }
 }
 
 typedef void (*origReadProp)(void*, SP<CXWaylandSurface>, uint32_t, xcb_get_property_reply_t*);
@@ -324,7 +411,9 @@ static void forgetHooks() {
     g_hookCM   = nullptr;
     g_hookProp = nullptr;
     g_buttonListener.reset();
+    g_fullscreenListener.reset();
     g_dragWindow.reset();
+    g_clickSurface.reset();
 }
 
 // Read-only integration point: no second drag state machine in Lua.
@@ -373,6 +462,12 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         g_hookCM   = hookExact("handleClientMessage", SIG_CLIENT_MESSAGE, (void*)&hkClientMessage);
         g_hookProp = hookExact("readProp", SIG_READ_PROP, (void*)&hkReadProp);
         g_buttonListener = Event::bus()->m_events.input.mouse.button.listen(onButton);
+        // Keybinds, drag-away and Omarchy's unmaximize_others change it too.
+        g_fullscreenListener = Event::bus()->m_events.window.fullscreen.listen([](PHLWINDOW w) {
+            try {
+                syncReportedMaximize(w);
+            } catch (...) {}
+        });
         if (!HyprlandAPI::addLuaFunction(handle, "xcsd", "drag_active", luaDragActive))
             throw std::runtime_error("hypr-xcsd: cannot expose native drag state");
         if (!HyprlandAPI::addLuaFunction(handle, "xcsd", "override_redirect", luaOverrideRedirect))

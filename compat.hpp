@@ -25,6 +25,16 @@ namespace XcsdCompat {
     inline void refreshDecorations(const PHLWINDOW& w) {
         w->presentation().refreshValues();
     }
+    // A suppress_event = "maximize" window rule applies to this window.
+    inline bool suppressesMaximize(const PHLWINDOW& w) {
+        return w->fullscreenPolicy().requestSuppression().maximize;
+    }
+    // Set _NET_WM_STATE_MAXIMIZED_* on the X11 window (no-op when unchanged).
+    // Hyprland has this setter but never calls it.
+    inline void reportMaximized(const PHLWINDOW& w, bool maximized) {
+        if (w->backend().isX11())
+            w->backend().setMaximized(maximized);
+    }
 }
 #else
 namespace XcsdCompat {
@@ -45,6 +55,17 @@ namespace XcsdCompat {
     }
     inline void refreshDecorations(const PHLWINDOW& w) {
         w->updateDecorationValues();
+    }
+    inline bool suppressesMaximize(const PHLWINDOW& w) {
+        return w->m_suppressedEvents & Desktop::View::SUPPRESS_MAXIMIZE;
+    }
+    // As 0.57's CX11Backend::setMaximized: the flag, then resend the state.
+    inline void reportMaximized(const PHLWINDOW& w, bool maximized) {
+        const auto xs = w ? w->m_xwaylandSurface.lock() : nullptr;
+        if (!xs || xs->m_maximized == maximized)
+            return;
+        xs->m_maximized = maximized;
+        xs->setFullscreen(xs->m_fullscreen);
     }
 }
 #endif
