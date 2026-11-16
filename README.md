@@ -65,6 +65,7 @@ hyprpm details worth knowing (as of hyprpm 0.56.2):
 
 - **Starting a drag:** only while a mouse button is held. A drag never replaces one already in progress. Releasing the button ends it, as with any Hyprland drag. Hyprland keeps that release to end the drag, so it's forwarded to the app afterwards; otherwise the app would think the button is still held and ignore its next press. It is never sent at the start, because GTK cancels a move when it sees its button's release. Like Super + drag, the drag doesn't take pointer focus from the window. A cancel request only stops a drag started by the same window.
 - **Keyboard move and resize:** EWMH directions 9 and 10 are ignored.
+- **Maximize button:** Omarchy blocks maximize requests from every app (`suppress_event = "maximize"`) and puts a maximize button in its own title bar instead. On `x11-csd` windows that bar is hidden, so hypr-xcsd honours the app's own request (`_NET_WM_STATE` maximized) when that rule applies, but only within a second of a pointer click on that window, and once per click. A maximize an app makes on its own, such as restoring its last state, stays blocked, and so does one made before the window appears. Hyprland never tells X11 apps they're maximized; hypr-xcsd does for `x11-csd` windows, whoever maximized them, so the app's button can switch to restore. For apps that ignore that and ask to maximize every time, a request to maximize an already maximized window restores it; a request to unmaximize only ever restores. Not covered: an app's own keyboard shortcut for maximize, a Maximize item in its popup menu (a separate window), and touch taps. Windows without the rule are left to Hyprland.
 - **The `x11-csd` tag** mirrors only a valid, explicit Motif "no decorations" hint. If the hint is absent, deleted, malformed or asks for decorations, Omarchy's bar comes back. Sending a move request doesn't change the decision. Windows are checked before they first appear, and windows already open are checked when the plugin loads. Unloading the plugin removes the tags.
 
 Lua integrations can query `hl.plugin.xcsd.override_redirect(window.address)`
@@ -86,6 +87,7 @@ make test    # policy, maintenance and hook-symbol checks; no compositor needed
 
 - **Omarchy's keep-below-bar module:** `make test KEEP_BELOW_BAR=~/.config/hypr/keep-below-bar.lua` also checks it.
 - **Live X11 test:** `tests/x11-decoration.py` runs against a real Xwayland. It requires `XCSD_DISPOSABLE=1` and must only be pointed at a throwaway nested Hyprland, never your desktop session.
+- **Live maximize test:** `tests/x11-maximize.py` has the same requirements, plus the window rules in its docstring and real pointer clicks in the nested compositor (for example from a virtual pointer bound to it). It writes each step that needs a click to `$XCSD_STATUS`.
 - **Testing local changes through hyprpm:** register your checkout with `hyprpm add "file://$PWD"`. hyprpm builds committed source only, so commit before running `hyprpm update`.
 - **Contributor guardrails:** `AGENTS.md`.
 
